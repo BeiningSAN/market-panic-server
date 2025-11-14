@@ -15,16 +15,20 @@ const io = new Server(server, {
   },
 });
 
+// ---- GAME CONFIG ----
+const INITIAL_BALANCE = 1000;   // 每个玩家初始 1000 €
+const INITIAL_PRICE   = 100;    // 初始股价 100 €
+
 // ---- GAME STATE ----
 let players = {};          // { socketId: { name, balance, choice } }
 let hostId = null;
 
 let currentNews = "";
 let currentRound = 0;
-let currentPrice = 100;    // starting price
-let hasShownFirstNews = false; // first news has no payoff
+let currentPrice = INITIAL_PRICE;    // starting price = 100
+let hasShownFirstNews = false;       // 第一条新闻不结算，只是示例
 
-// 30+ news scenarios, each with a price impact (ΔP)
+// impact = 百分比变化，例如 6 表示 +6%，-10 表示 -10%
 const scenarios = [
   { text: "📉 Panic selling! Prices drop quickly!", impact: -12 },
   { text: "📈 Central bank cuts rates sharply! Strong market rebound!", impact: +15 },
@@ -57,13 +61,11 @@ const scenarios = [
   { text: "💰 Major investment firm launches a billion-dollar innovation fund.", impact: +8 },
   { text: "🎭 Mixed economic data confuses the market.", impact: 0 },
 
-  // NEW ITEMS YOU REQUESTED
+  // 你新加的几条
   { text: "🌐 US–China trade war escalates, markets panic.", impact: -13 },
   { text: "🇺🇸 Trump announces new tariffs, markets drop sharply.", impact: -12 },
-
   { text: "🏦 The central bank warns it may raise interest rates soon, making markets nervous.", impact: -5 }
 ];
-
 
 // ---- SOCKET LOGIC ----
 io.on("connection", (socket) => {
@@ -80,8 +82,8 @@ io.on("connection", (socket) => {
   socket.on("join_as_player", (playerName) => {
     players[socket.id] = {
       name: playerName,
-      balance: 100,
-      choice: "",     // last decision: "buy" | "hold" | "sell" | ""
+      balance: INITIAL_BALANCE,  // 这里改成 1000
+      choice: "",                // "buy" | "hold" | "sell" | ""
     };
     console.log("Player joined:", playerName);
     socket.emit("player_confirmed");
@@ -103,10 +105,7 @@ io.on("connection", (socket) => {
 
     currentRound += 1;
 
-    // when a new round starts, we do NOT reset choices here,
-    // because choices are used for the NEXT news.
-    // Players can change their choice any time during the countdown.
-
+    // 新一轮开始，玩家可以在倒计时里随时改 choice
     io.emit("round_started", {
       round: currentRound,
       duration: durationSeconds,
@@ -117,46 +116,50 @@ io.on("connection", (socket) => {
   socket.on("random_news", () => {
     if (socket.id !== hostId) return;
 
-    // pick a random scenario
+    // 随机抽一条新闻
     const scenario =
       scenarios[Math.floor(Math.random() * scenarios.length)];
 
     const oldPrice = currentPrice;
-    currentPrice = Math.max(1, currentPrice + scenario.impact);
-    const change = currentPrice - oldPrice;
-    const pct = (change / oldPrice) * 100;
+    const pctImpact = scenario.impact;        // 比如 6 表示 +6%
+
+    // ---- 更新价格：按百分比变化 ----
+    const priceFactor = 1 + pctImpact / 100;  // 1.06 / 0.9 之类
+    const newPrice = parseFloat((oldPrice * priceFactor).toFixed(2));
+    const change = parseFloat((newPrice - oldPrice).toFixed(2));
+
+    currentPrice = Math.max(1, newPrice);
+    const pct = parseFloat(((change / oldPrice) * 100).toFixed(1)); // 实际百分比，1 位小数
 
     // -------------------------
-    // SETTLE PREVIOUS ROUND
+    // 结算上一轮
     // -------------------------
     if (hasShownFirstNews) {
-      // we already had a previous news, so now we use THIS price change
-      // to reward/punish previous choices
       Object.values(players).forEach((p) => {
-        if (!p.choice) return; // no decision -> no gain/loss
+        if (!p.choice) return; // 没做选择就不结算
 
         if (p.choice === "buy") {
-          // price up => win, price down => lose (change may be negative)
-          p.balance += change;
+          // 买入：资产跟价格同向变化
+          const factor = 1 + pctImpact / 100;
+          p.balance = parseFloat((p.balance * factor).toFixed(2));
         } else if (p.choice === "sell") {
-          // opposite of buy
-          p.balance -= change;
+          // 卖空：价格涨你亏，价格跌你赚
+          const factor = 1 - pctImpact / 100;
+          p.balance = parseFloat((p.balance * factor).toFixed(2));
         } else if (p.choice === "hold") {
-          // safest: no change
-          // if you want small effect: p.balance += change * 0.2;
+          // hold：最安全，不变
         }
       });
 
-      console.log("Round settled with change:", change);
+      console.log("Round settled. Price change:", change, "(", pctImpact, "% )");
     } else {
-      // first news: only used to give information,
-      // no payoff because there was no previous decision
+      // 第一条新闻：只作为示例，不结算
       hasShownFirstNews = true;
     }
 
     currentNews = scenario.text;
 
-    // broadcast updated news + price
+    // 广播新闻 + 价格
     io.emit("news_update", {
       text: currentNews,
       price: currentPrice,
@@ -164,7 +167,7 @@ io.on("connection", (socket) => {
       pct: pct,
     });
 
-    // broadcast updated balances after settlement
+    // 广播更新后的玩家余额
     io.emit("update_players", players);
   });
 
@@ -188,4 +191,3 @@ const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
   console.log(`Backend server running on port ${PORT}`);
 });
-
