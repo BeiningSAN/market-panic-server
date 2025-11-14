@@ -91,7 +91,7 @@ io.on("connection", (socket) => {
     io.emit("update_players", players);
   });
 
-  // host starts a timed decision phase (10s etc.)
+  // host starts a timed decision phase (30s etc.)
   socket.on("start_round", (durationSeconds) => {
     if (socket.id !== hostId) return;
 
